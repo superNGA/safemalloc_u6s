@@ -30,3 +30,6 @@ benchs/time/csv_time
 benchs/time/time
 tests/leak/leak
 tests/race/race
+
+.token
+.Token

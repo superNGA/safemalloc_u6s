@@ -22,7 +22,7 @@
  * SOFTWARE.
  */
 
-#include "sfmalloc.h"
+#include "../../sfmalloc.h"
 
 #define MAX_NUM_POINTERS 5000
 

@@ -38,48 +38,43 @@
 	#include <signal.h>
 	#include <sys/types.h>
 
-#ifdef _WIN32
-    #define SF_MUTEX_LOCK() WaitForSingleObject(ghMutex, INFINITE)
-    #define SF_MUTEX_UNLOCK() ReleaseMutex(ghMutex)
-#else
-    #define SF_MUTEX_LOCK() pthread_mutex_lock(&sf_mutex)
-    #define SF_MUTEX_UNLOCK() pthread_mutex_unlock(&sf_mutex)
-#endif
-	/*
-	 * Define the define below (or before including this header)
-	 * in order to reduce the memory footprint of safemalloc
-	 * internal structures.
-	 *
-	 * #define SFMALLOC_SAVE_SPACE
-	 */
 
-	/**
-	 * Custom allocator, if want
-	 */
-	#define malloc_fn   malloc
-	#define calloc_fn   calloc
-	#define realloc_fn  realloc
-	#define free_fn     free
+/*
+* Define the define below (or before including this header)
+* in order to reduce the memory footprint of safemalloc
+* internal structures.
+*
+* #define SFMALLOC_SAVE_SPACE
+*/
 
-	/**
-	 * Custom exit error code.
-	 *
-	 * Change if you want to another code other than
-	 * 'EXIT_FAILURE'. Useful if you do not want
-	 * to mix with return codes already used
-	 * by the application.
-	 */
+
+/**
+* Custom allocator, if want
+*/
+#define malloc_fn   malloc
+#define calloc_fn   calloc
+#define realloc_fn  realloc
+#define free_fn     free
+
+/**
+* Custom exit error code.
+*
+* Change if you want to another code other than
+* 'EXIT_FAILURE'. Useful if you do not want
+* to mix with return codes already used
+* by the application.
+*/
 #ifndef SFMALLOC_EXIT_FAILURE
 	#define SFMALLOC_EXIT_FAILURE (EXIT_FAILURE)
 #endif
 
-	/*
-	 * Transparent usage.
-	 *
-	 * Enables transparent usage of safemalloc in the project.
-	 * This flag can be enabled either by a define statement
-	 * or by a 'CFLAGS', with -DSF_TRANSPARENT.
-	 */
+/*
+* Transparent usage.
+*
+* Enables transparent usage of safemalloc in the project.
+* This flag can be enabled either by a define statement
+* or by a 'CFLAGS', with -DSF_TRANSPARENT.
+*/
 #ifdef SF_TRANSPARENT
 	#define malloc  sf_malloc
 	#define calloc  sf_calloc
@@ -87,86 +82,6 @@
 	#define free    sf_free
 #endif
 
-	/**
-	 * Macros that expands to the real functions
-	 *
-	 * These macros help to obtain allocation info at compile time
-	 * like: filename, function name and line number.
-	 */
-#ifndef SFMALLOC_SAVE_SPACE
-	#define sf_malloc(size) \
-		_sf_malloc((size), __FILE__, __func__, __LINE__)
-	#define sf_calloc(nmemb, size) \
-		_sf_calloc((nmemb), (size), __FILE__, __func__, __LINE__)
-	#define sf_realloc(ptr, size) \
-		_sf_realloc((ptr), (size), __FILE__, __func__, __LINE__)
-	#define sf_free(ptr) \
-		_sf_free((ptr), __FILE__, __func__, __LINE__)
-#else
-	#define sf_malloc(size) \
-		_sf_malloc((size))
-	#define sf_calloc(nmemb, size) \
-		_sf_calloc((nmemb), (size))
-	#define sf_realloc(ptr, size) \
-		_sf_realloc((ptr), (size))
-	#define sf_free(ptr) \
-		_sf_free((ptr))
-#endif
-
-	/**
-	 * Check if a given address (returned from [m,c,re]alloc)
-	 * is NULL or not and behaves accordingly: print a nicely
-	 * formatted error message (in accordance with
-	 * SFMALLOC_SAVE_SPACE) and/or returns or abort
-	 * the program, depending on the flags.
-	 *
-	 * @param addr Address to be checked.
-	 * @param ret_stmt Return statement
-	 * @param fmt Formatted string.
-	 * @param ... Formatted string arguments.
-	 */
-#ifndef SFMALLOC_SAVE_SPACE
-	#define CHECK_ADDR(addr, ret_stmt, ...) \
-		do { \
-			if ((addr) == NULL) { \
-			SF_MUTEX_LOCK(); \
-				if (sf.verbose_mode & VERBOSE_MODE_2) { \
-					fprintf(stderr, "[%s:%d] %s(): ", file, line, func); \
-					fprintf(stderr, __VA_ARGS__); \
-				} \
-				SF_MUTEX_UNLOCK(); \
-				if (sf.on_error & ON_ERROR_ABORT) { \
-					abort(); \
-				} \
-				else if (sf.on_error & ON_ERROR_EXIT) { \
-					exit(SFMALLOC_EXIT_FAILURE); \
-				} \
-				else { \
-					ret_stmt; \
-				} \
-			} \
-		} while (0)
-#else
-		#define CHECK_ADDR(addr, ret_stmt, ...) \
-		do { \
-			if ((addr) == NULL) { \
-			SF_MUTEX_LOCK(); \
-				if (sf.verbose_mode & VERBOSE_MODE_2) { \
-					fprintf(stderr, __VA_ARGS__); \
-				} \
-				SF_MUTEX_UNLOCK(); \
-				if (sf.on_error & ON_ERROR_ABORT) { \
-					abort(); \
-				} \
-				else if (sf.on_error & ON_ERROR_EXIT) { \
-					exit(SFMALLOC_EXIT_FAILURE); \
-				} \
-				else { \
-					ret_stmt; \
-				} \
-			} \
-		} while (0)
-#endif
 
 	/**
 	 * Structure that holds per-allocation infos required
@@ -181,22 +96,25 @@
 		uintptr_t address;
 		struct address *next;
 
+		size_t bytes;
+
 		/* Additional info. */
 #ifndef SFMALLOC_SAVE_SPACE
-		size_t bytes;
 		const char *file;
 		const char *func;
 		int line;
 #endif
 	};
 
-	/* Behaviour macros. */
-	#define VERBOSE_MODE_1  1 /* Suppress all messages.      */
-	#define VERBOSE_MODE_2  2 /* Only errors messages.       */
-	#define VERBOSE_MODE_3  6 /* Full verbose.               */
-	#define ON_ERROR_ABORT  1 /* Abort if any error.         */
-	#define ON_ERROR_EXIT   2 /* Exit if any error.          */
-	#define ON_ERROR_NULL   4 /* Just returns NULL if error. */
+
+/* Behaviour macros. */
+#define VERBOSE_MODE_1  1 /* Suppress all messages.      */
+#define VERBOSE_MODE_2  2 /* Only errors messages.       */
+#define VERBOSE_MODE_3  (VERBOSE_MODE_1 & VERBOSE_MODE_2) /* Full verbose.               */
+#define ON_ERROR_ABORT  1 /* Abort if any error.         */
+#define ON_ERROR_EXIT   2 /* Exit if any error.          */
+#define ON_ERROR_NULL   4 /* Just returns NULL if error. */
+
 
 	/**
 	 * SafeMalloc main structure
@@ -211,22 +129,17 @@
 		/* Hashtable. */
 		struct hashtable *ht;
 
-		/* Initi/finish. */
 		int initialized;
-		int exiting;
 
 		/* Behaviour. */
 		int verbose_mode;
 		int on_error;
 
-		/* Allocation info (in bytes). */
 		size_t total_allocated;
-
-#ifndef SFMALLOC_SAVE_SPACE
 		size_t peak_memory;
 		size_t current_memory;
-#endif
-		/* Calls info. */
+
+		// NOTE : Only successful calls are recorded.
 		size_t malloc_calls;
 		size_t calloc_calls;
 		size_t realloc_calls;
@@ -242,21 +155,48 @@
 	extern void sf_reg_sigterm(void (*handler)(int));
 #endif
 
+
+	/**
+	 * Macros that expands to the real functions
+	 *
+	 * These macros help to obtain allocation info at compile time
+	 * like: filename, function name and line number.
+	 */
 #ifndef SFMALLOC_SAVE_SPACE
-	extern void *_sf_malloc(size_t size, const char *file, const char *func,
-		int line);
-	extern void *_sf_calloc(size_t nmemb, size_t size, const char *file,
-		const char *func, int line);
-	extern void *_sf_realloc(void *ptr, size_t size, const char *file,
-		const char *func, int line);
-	extern void _sf_free(void *ptr, const char *file, const char *func,
-		int line);
+	#define sf_malloc(size)        _sf_malloc((size), __FILE__, __func__, __LINE__)
+	#define sf_xmalloc(size)        _sf_xmalloc((size), __FILE__, __func__, __LINE__)
+
+	#define sf_calloc(nmemb, size) _sf_calloc((nmemb), (size), __FILE__, __func__, __LINE__)
+	#define sf_xcalloc(nmemb, size) _sf_xcalloc((nmemb), (size), __FILE__, __func__, __LINE__)
+	
+	#define sf_realloc(ptr, size)  _sf_realloc((ptr), (size), __FILE__, __func__, __LINE__)
+	#define sf_xrealloc(ptr, size)  _sf_xrealloc((ptr), (size), __FILE__, __func__, __LINE__)
+
+	#define sf_free(ptr)           _sf_free((ptr), __FILE__, __func__, __LINE__)
 #else
-	extern void *_sf_malloc(size_t size);
-	extern void *_sf_calloc(size_t nmemb, size_t size);
-	extern void *_sf_realloc(void *ptr, size_t size);
-	extern void _sf_free(void *ptr);
+	#define sf_malloc(size) _sf_malloc((size), 0, 0, 0)
+	#define sf_xmalloc(size) _sf_xmalloc((size), 0, 0, 0)
+
+	#define sf_calloc(nmemb, size) _sf_calloc((nmemb), (size), 0, 0, 0)
+	#define sf_xcalloc(nmemb, size) _sf_xcalloc((nmemb), (size), 0, 0, 0)
+
+	#define sf_realloc(ptr, size) _sf_realloc((ptr), (size), 0, 0, 0)
+	#define sf_xrealloc(ptr, size) _sf_xrealloc((ptr), (size), 0, 0, 0)
+
+	#define sf_free(ptr) _sf_free((ptr), 0, 0, 0)
 #endif
+extern void *_sf_malloc(size_t size, const char *file, const char *func, int line);
+extern void *_sf_xmalloc(size_t size, const char *file, const char *func, int line);
+
+extern void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, int line);
+extern void *_sf_xcalloc(size_t nmemb, size_t size, const char *file, const char *func, int line);
+
+extern void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, int line);
+extern void *_sf_xrealloc(void *ptr, size_t size, const char *file, const char *func, int line);
+
+extern void _sf_free(void *ptr, const char *file, const char *func, int line);
+
+
 
 /*===========================================================================*
  *                                                                           *

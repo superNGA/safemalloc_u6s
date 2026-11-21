@@ -26,36 +26,62 @@
 #undef SF_TRANSPARENT
 
 #include "sfmalloc.h"
+#include <assert.h>
+#include <stdarg.h>
 
-/* User signal handlers. */
-#ifndef SF_DISABLE_SIGNAL_HANDLERS
-static void (*sigint)(int) = NULL;
-static void (*sigterm)(int) = NULL;
-#endif
+
+// colorful terminal text
+#define LOGCLR_RESET   "\033[0m"
+#define LOGCLR_BOLD    "\033[1m"
+#define LOGCLR_CYAN    "\033[36m"
+#define LOGCLR_GREEN   "\033[32m"
+#define LOGCLR_YELLOW  "\033[33m"
+#define LOGCLR_RED     "\033[31m"
+#define LOG(fmt, ...) printf(fmt"\n", ##__VA_ARGS__)
+
+
+#define ASSERT_STATE() assert(!sf.initialized)
+
+
 
 /*
  * SafeMalloc main context structure.
  */
 static struct safemalloc sf = {
-	0, 0, 0, 0, 0, 0,
+	0, 0, 0, 0, 0,
 #ifndef SFMALLOC_SAVE_SPACE
 	0, 0,
 #endif
 	0, 0, 0, 0
 };
 
-/*
- * Safe Malloc mutex.
- */
+
+// Safe Malloc mutex.
 #ifdef _WIN32
 static HANDLE ghMutex = NULL;
 #else
 static pthread_mutex_t sf_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
+static int sfmtx_held = 0;
+
+#ifdef _WIN32
+    #define SF_MUTEX_LOCK_IMPL() WaitForSingleObject(ghMutex, INFINITE)
+    #define SF_MUTEX_UNLOCK_IMPL() ReleaseMutex(ghMutex)
+#else
+    #define SF_MUTEX_LOCK_IMPL() pthread_mutex_lock(&sf_mutex) 
+    #define SF_MUTEX_UNLOCK_IMPL() pthread_mutex_unlock(&sf_mutex)
+#endif
+
+#define SF_MUTEX_LOCK()   do{ SF_MUTEX_LOCK_IMPL();   sfmtx_held = 1; } while (0)
+#define SF_MUTEX_UNLOCK() do{ SF_MUTEX_UNLOCK_IMPL(); sfmtx_held = 0; } while (0)
+#define SFMTX_ASSERT_LOCK()   assert(sfmtx_held)
+#define SFMTX_ASSERT_UNLOCK() assert(!sfmtx_held)
+
+
 
 /* Forward declarations. */
 static int hashtable_init(struct hashtable **ht);
-static int hashtable_finish(struct hashtable **ht);
+static int hashtable_finish(struct hashtable *ht);
 static int hashtable_add(struct hashtable **ht, struct address *key);
 static void* hashtable_remove(struct hashtable **ht, uintptr_t address);
 static void* hashtable_get(struct hashtable **ht, uintptr_t key);
@@ -67,588 +93,293 @@ static void hashtable_print_stats(struct hashtable **ht);
 static int hashtable_cmp_ptr(uintptr_t key1, uintptr_t key2);
 static uint64_t hashtable_splitmix64_hash(uintptr_t key, size_t size);
 
+
+
+void sf_log_leaks()
+{
+	SFMTX_ASSERT_LOCK();
+	LOG(LOGCLR_RED);
+	struct hashtable *h = sf.ht;
+	if (!h)
+		return;
+
+	for (struct address **lpp = h->bucket; lpp < h->bucket + h->capacity; ++lpp) {
+		struct address *lp = *lpp;
+		for (; lp; lp = lp->next) {
+			LOG("memory leak of %zu bytes", lp->bytes);
+#ifndef SFMALLOC_SAVE_SPACE
+			LOG("file : %s, [line: %d]", lp->file, lp->line);
+			LOG("func : %s", lp->func);
+#endif // SFMALLOC_SAVE_SPACE
+		}
+	}
+	LOG(LOGCLR_RESET);
+}
+
 /**
  * Deallocates all the memory at the process termination, warns
  * the user for possible memory leaks (if VERBOSE_MODE_2) and
  * shows the data gathere at the moment.
  */
-static void sf_exit(void)
+static void sf_uninit(void)
 {
-SF_MUTEX_LOCK();
-	sf.exiting = 1;
-	if (sf.verbose_mode == VERBOSE_MODE_3)
-	{
-		fprintf(stderr,
-			"\n=====================================================================\n");
-		fprintf(stderr, "SafeMalloc v0.1 - Theldus, verbose mode\n");
-		fprintf(stderr, "---------------------------------------------\n\n");
+	SF_MUTEX_LOCK();
+	if (sf.verbose_mode == VERBOSE_MODE_3) {
+		if (sf.ht->elements) {
+			LOG(LOGCLR_RED);
+			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
+			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
+			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
+		}
+		else {
+			LOG(LOGCLR_GREEN);
+			LOG("NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:");
+			LOG(")!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAK");
+			LOG("S:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LE");
+		}
+		LOG(LOGCLR_RESET);
+		LOG("SafeMalloc");
+		LOG("");
+		LOG("total memory allocated : %zu", sf.total_allocated);
+		LOG("peak memory consumption : %zu", sf.peak_memory);
+		LOG("");
+		LOG("malloc calls  : %zu", sf.malloc_calls);
+		LOG("calloc calls  : %zu", sf.calloc_calls);
+		LOG("realloc calls : %zu", sf.realloc_calls);
+		LOG("free calls    : %zu", sf.free_calls);
 	}
-SF_MUTEX_UNLOCK();
-	sf_free_all();
-SF_MUTEX_LOCK();
-	if (sf.verbose_mode == VERBOSE_MODE_3)
-	{
-		fprintf(stderr, "---------------------\n");
-		fprintf(stderr, "     Usage data:\n");
-		fprintf(stderr, "---------------------\n\n");
-		fprintf(stderr, "Allocation infos:\n");
-		fprintf(stderr, "-----------------\n");
-		fprintf(stderr, "Total allocated (bytes): %zu\n", sf.total_allocated);
-#ifndef SFMALLOC_SAVE_SPACE
-		fprintf(stderr, "Peak memory (bytes): %zu\n", sf.peak_memory);
-		fprintf(stderr, "Leaked (bytes): %zu\n\n", sf.current_memory);
-#endif
-		fprintf(stderr, "Calls info:\n");
-		fprintf(stderr, "-----------\n");
-		fprintf(stderr, "Malloc calls:  %zu\n", sf.malloc_calls);
-		fprintf(stderr, "Calloc calls:  %zu\n", sf.calloc_calls);
-		fprintf(stderr, "Realloc calls: %zu\n", sf.realloc_calls);
-		fprintf(stderr, "Free calls:    %zu\n", sf.free_calls);
-		fprintf(stderr,
-			"=====================================================================\n");
-	}
-SF_MUTEX_UNLOCK();
+	if (sf.verbose_mode & VERBOSE_MODE_2)
+		sf_log_leaks();
+
+	hashtable_finish(sf.ht);
+	sf.ht = NULL;
+	SF_MUTEX_UNLOCK();
 
 #ifdef _WIN32
-    CloseHandle(ghMutex);
+	CloseHandle(ghMutex);
 #else
 	pthread_mutex_destroy(&sf_mutex);
 #endif
 }
 
-#ifndef SF_DISABLE_SIGNAL_HANDLERS
-/**
- * Register a SIGINT.
- */
-void sf_reg_sigint(void (*handler)(int))
+
+static void sfm_fail_die(const char *msg, const char *file, const char *func, int line)
 {
-	sigint = handler;
+	static const char nullstr[] = "null";
+	printf(LOGCLR_RED);
+	{
+		printf("=============== FATAL ERROR ===============");
+		printf("%s", msg);
+		printf("file : %s", file ? file : nullstr);
+		printf("func : %s", func ? func : nullstr);
+		printf("line : %d", line);
+	}
+	printf(LOGCLR_RESET);
+	exit(SFMALLOC_EXIT_FAILURE);
 }
 
-/**
- * Register a SIGTERM.
- */
-void sf_reg_sigterm(void (*handler)(int))
+
+static void sfm_warn(const char *msg, const char *file, const char *func, int line)
 {
-	sigterm = handler;
+	static const char nullstr[] = "null";
+	printf(LOGCLR_YELLOW);
+	{
+		printf("%s", msg);
+		printf("file : %s", file ? file : nullstr);
+		printf("func : %s", func ? func : nullstr);
+		printf("line : %d", line);
+	}
+	printf(LOGCLR_RESET);
 }
 
-/**
- * SIGINT and SIGTERM handler that calls sf_exit if the process
- * get interrupted.
- *
- * @param s Signal number.
- */
-static void sf_sig_handler(int s)
+
+int sf_init(int vlvl, int er_rout)
 {
-	sf_exit();
-	if (sigint != NULL && s == SIGINT)
-		sigint(s);
-	if (sigterm != NULL && s == SIGTERM)
-		sigterm(s);
-	_exit(0);
-}
-#endif
-
-/**
- * Deallocates all the memory allocated at the moment and warns
- * the user (if VERBOSE_MODE_2) for possible leaks.
- */
-void sf_free_all(void)
-{
-	struct hashtable *h;   /* Hashtable.    */
-	struct address *l_ptr; /* List pointer. */
-	size_t i;              /* Loop index.   */
-
-SF_MUTEX_LOCK();
-	h = sf.ht;
-
-	/* Invalid array. */
-	if (h == NULL)
-	{
-		SF_MUTEX_UNLOCK();
-		return;
-	}
-
-	if (sf.exiting && sf.verbose_mode & VERBOSE_MODE_2 && h->elements)
-	{
-		fprintf(stderr,
-			"Memory leaks were found during execution, please check below and fix.\n");
-		fprintf(stderr,
-			"----------------------------------------------------------------------\n");
-	}
-
-	/*
-	 * For each bucket, deallocates each list.
-	 */
-	for (i = 0; i < h->capacity; i++)
-	{
-		struct address *l_ptr_next;
-
-		l_ptr = h->bucket[i];
-		while (l_ptr != NULL)
-		{
-			l_ptr_next = l_ptr->next;
-
-			/* If not supressing messages. */
-			if (sf.exiting && sf.verbose_mode & VERBOSE_MODE_2)
-			{
-#ifndef SFMALLOC_SAVE_SPACE
-				fprintf(stderr, "- Address 0x%p" " (%zu bytes) not freed!\n"
-					"  -> Allocated at [%s:%d] %s()\n\n",
-					l_ptr->address, l_ptr->bytes, l_ptr->file, l_ptr->line, l_ptr->func);
-#else
-				fprintf(stderr, "- Address 0x%p" " not freed!\n", l_ptr->address);
-#endif
-			}
-
-			free_fn(l_ptr);
-			l_ptr = l_ptr_next;
-		}
-	}
-
-	free_fn(h->bucket);
-	free_fn(h);
-	sf.ht = NULL;
-
-	if (!sf.exiting)
-	{
-		/* Allocate a new hashtable again. */
-		if (hashtable_init(&sf.ht) < 0)
-		{
-			SF_MUTEX_UNLOCK();
-			fprintf(stderr, "sf_free_all: an error has ocurred while allocating"
-				" hashtable!\n");
+#ifdef _WIN32
+	if (!ghMutex) {
+		ghMutex = CreateMutex(NULL, FALSE, NULL);
+		if (!ghMutex) {
+			fprintf(stderr, "CreateMutex error: %d\n", GetLastError());
 			exit(SFMALLOC_EXIT_FAILURE);
 		}
 	}
-
-SF_MUTEX_UNLOCK();
-}
-
-/**
- * Initializes the safemalloc context.
- *
- * @param verbose_mode Verbose mode level.
- * @param on_error On Error behaviour.
- *
- * @return Returns 0 if success and a negative
- * number otherwise.
- */
-int sf_init(int verbose_mode, int on_error)
-{
-#ifdef _WIN32
-    if (ghMutex == NULL) {
-        ghMutex = CreateMutex(
-            NULL,              // default security attributes
-            FALSE,             // initially not owned
-            NULL);             // unnamed mutex
-
-        if (ghMutex == NULL) {
-            fprintf(stderr, "CreateMutex error: %d\n", GetLastError());
-            exit(SFMALLOC_EXIT_FAILURE);
-        }
-    }
-#endif
-SF_MUTEX_LOCK();
-	/* Already initialized. */
-	if (sf.initialized)
-	{
-		SF_MUTEX_UNLOCK();
-		return (0);
-	}
-
-	/* Try to register our deallocating/leak-check routine. */
-	if (atexit(sf_exit))
-	{
-		fprintf(stderr, "sf_init: failed while trying to register finish"
-			" routine!");
-		exit(SFMALLOC_EXIT_FAILURE);
-	}
-
-#ifndef SF_DISABLE_SIGNAL_HANDLERS
-	/* Register our signal handlers. */
-	signal(SIGINT, sf_sig_handler);
-	signal(SIGTERM, sf_sig_handler);
 #endif
 
-	/* Set behaviour. */
-	if (verbose_mode < 1 || verbose_mode > 6
-		|| on_error  < 1 || on_error > 2)
-	{
-		fprintf(stderr, "sf_init: invalid value for verbose_mode and/or"
-			" on_error\nplease check your values!\n");
-		exit(SFMALLOC_EXIT_FAILURE);
-	}
+	SF_MUTEX_LOCK();
+	assert(!sf.initialized && "initializing sf twice!");
+	assert(vlvl == VERBOSE_MODE_1 || vlvl == VERBOSE_MODE_2 || vlvl == VERBOSE_MODE_3);
+	assert(er_rout == ON_ERROR_ABORT || er_rout == ON_ERROR_EXIT || er_rout == ON_ERROR_NULL);
 
-	/* Allocate hashtable. */
 	if (hashtable_init(&sf.ht) < 0)
-	{
-		fprintf(stderr, "sf_init: an error has ocurred while allocating"
-			" hashtable!\n");
-		exit(SFMALLOC_EXIT_FAILURE);
-	}
+		sfm_fail_die("sf_init: an error has ocurred while allocating hashtable.", NULL, NULL, NULL);
 
-	sf.verbose_mode = verbose_mode;
-	sf.on_error     = on_error;
+	sf.verbose_mode = vlvl;
+	sf.on_error     = er_rout;
 	sf.initialized  = 1;
-	sf.exiting      = 0;
-SF_MUTEX_UNLOCK();
-
-	((void)hashtable_finish);
-	((void)hashtable_get);
-#if HASHTABLE_ENABLE_STATS == 1
-	((void)hashtable_print_stats);
-#endif
-	return (0);
+	SF_MUTEX_UNLOCK();
+	return 0;
 }
 
-/**
- * Allocates @p size bytes and returns a pointer to the
- * allocated memory. The memory is not initialized.
- *
- * If @p size is zero, safemalloc will allocate a single
- * byte, thus, ensuring that no issues should occur with
- * an accidental dereference.
- *
- * @param size Size in bytes to be allocated.
- *
- * @return If success, returns a void pointer pointing to the
- * memory block allocated. On error, the should may return
- * NULL or abort the execution, accordingly with the
- * _on_error_ flag set on sf_init(). ON_ERROR_ABORT is
- * set by default.
- */
-void *_sf_malloc(size_t size
-#ifndef SFMALLOC_SAVE_SPACE
-	,const char *file, const char *func, int line
-#endif
-)
+
+static int record_alloc(struct address *p, size_t s, const char *file, const char *func, int line)
 {
-	struct address *addr;
-
-	sf_init(VERBOSE_MODE_2, ON_ERROR_ABORT);
-
-	/* Avoid undefined behaviour. */
-	if (!size)
-		size = 1;
-
-	/* Try to allocate memory. */
-	addr = malloc_fn(sizeof(struct address) + size);
-	CHECK_ADDR(addr, return NULL,
-		"malloc: failed while allocating %zu bytes!\n", size);
-
-	/* Fill struct addr fields. */
-	addr->address = (uintptr_t)(addr+1);
-	addr->next    = NULL;
-
+	p->address = (uintptr_t)(p+1);
+	p->next    = NULL;
+	p->bytes   = s;
 #ifndef SFMALLOC_SAVE_SPACE
-	addr->bytes = size;
-	addr->file  = file;
-	addr->func  = func;
-	addr->line  = line;
+	p->file    = file;
+	p->func    = func;
+	p->line    = line;
 #endif
 
-SF_MUTEX_LOCK();
-	/* Fill some infos. */
-	sf.total_allocated += size;
-	sf.malloc_calls++;
-#ifndef SFMALLOC_SAVE_SPACE
-	sf.current_memory += size;
-	if (sf.current_memory > sf.peak_memory)
-		sf.peak_memory = sf.current_memory;
-#endif
-
-	/* Add into the addresses list. */
-	if (hashtable_add(&sf.ht, addr) < 0)
+	int ret = 0;
+	SF_MUTEX_LOCK();
 	{
-		/* CHECK_ADDR expects that sf_mutex is unlocked. */
-		SF_MUTEX_UNLOCK();
+		sf.total_allocated += s;
+		sf.current_memory  += s;
+		if (sf.current_memory > sf.peak_memory)
+			sf.peak_memory = sf.current_memory;
 
-		free_fn(addr);
-		CHECK_ADDR(NULL, return NULL,
-			"malloc: failed while adding into the list!\n");
+		if (hashtable_add(&sf.ht, p) < 0)
+			ret = 1;
 	}
-	else
-		SF_MUTEX_UNLOCK();
-
-	/* Return address. */
-	return ((void*)(addr+1));
+	SF_MUTEX_UNLOCK();
+	return ret;
 }
 
-/**
- * Allocates memory for an array of @p nmemb elements
- * of @p size bytes each and returns a pointer to the
- * allocated memory. The memory is set to zero.
- *
- * If total amount of bytes is 0 (either nmemb or size
- * equals 0), sfcalloc will allocate a single byte, thus,
- * ensuring that no issues should occur with
- * an accidental dereference.
- *
- * @return If success, returns a void pointer pointing to the
- * memory block allocated. On error, the should may return
- * NULL or abort the execution, accordingly with the
- * _on_error_ flag set on sf_init(). ON_ERROR_ABORT is
- * set by default.
- */
-void *_sf_calloc(size_t nmemb, size_t size
-#ifndef SFMALLOC_SAVE_SPACE
-	,const char *file, const char *func, int line
-#endif
-)
+
+void *_sf_malloc(size_t size, const char *file, const char *func, int line)
 {
-	struct address *addr;
-	size_t new_size;
-
-	sf_init(VERBOSE_MODE_2, ON_ERROR_ABORT);
-
-	/*
-	 * There are some concerns about @p nmemb and @p size
-	 * regarding why calloc have 2 parameters instead of one,
-	 * like malloc.
-	 *
-	 * (See https://stackoverflow.com/q/4083916/3594716)
-	 *
-	 * Considering this, if nmemb*size exceeds size_t size
-	 * the following statement will occur in overflow. Since
-	 * I also need to allocate the 'struct address', this wrapper
-	 * approach consists of allocating one single block of
-	 * size*nmemb + sizeof(struct address) bytes. I'll leave
-	 * the overflow check for the calloc_fn.
-	 */
-	size *= nmemb;
-
-	/* Avoid undefined behaviour. */
-	if (!size)
-		size = 1;
-
-	new_size = size + (sizeof(struct address));
-
-	/* Try to allocate memory. */
-	addr = calloc_fn(1, new_size);
-	CHECK_ADDR(addr, return NULL,
-		"calloc: failed while allocating %zu bytes!\n", size);
-
-	/* Fill struct addr fields. */
-	addr->address = (uintptr_t)(addr+1);
-	addr->next    = NULL;
-
-#ifndef SFMALLOC_SAVE_SPACE
-	addr->bytes = size;
-	addr->file  = file;
-	addr->func  = func;
-	addr->line  = line;
-#endif
-
-SF_MUTEX_LOCK();
-	/* Fill some infos. */
-	sf.total_allocated += size;
-	sf.calloc_calls++;
-#ifndef SFMALLOC_SAVE_SPACE
-	sf.current_memory += size;
-	if (sf.current_memory > sf.peak_memory)
-		sf.peak_memory = sf.current_memory;
-#endif
-
-	/* Add into the addresses list. */
-	if (hashtable_add(&sf.ht, addr) < 0)
-	{
-		/* CHECK_ADDR expects that sf_mutex is unlocked. */
-		SF_MUTEX_UNLOCK();
-
-		free_fn(addr);
-		CHECK_ADDR(NULL, return NULL,
-			"calloc: failed while adding into the list!\n");
+	ASSERT_STATE();
+	if (!size) {
+		sfm_warn("[malloc] trying to zero bytes", file, func, line);
+		return NULL;
 	}
-	else
-		SF_MUTEX_UNLOCK();
 
-	/* Return address. */
-	return ((void*)(addr+1));
+	struct address *p = malloc_fn(sizeof(struct address) + size);
+	if (!p)
+		return NULL;
+
+	if (record_alloc(p, size, file, func, line) != 0) {
+		free_fn(p);
+		sfm_fail_die("[malloc] failed to record allocation", file, func, line);
+	}
+
+	SF_MUTEX_LOCK();
+	++sf.malloc_calls;
+	SF_MUTEX_UNLOCK();
+
+	return p + 1;
 }
 
-/**
- * Changes the size of the memory block pointed to by @p ptr.
- *
- * The function may move the memory block to a new location
- * (whose address is returned by the function). The content
- * of the memory block is preserved up to the lesser of the
- * new and old sizes, even if the block is moved to a new
- * location. If the new @p size is larger, the value of the
- * newly allocated portion is indeterminate.
- *
- * In case that ptr is a NULL pointer, the function behaves
- * like malloc, assigning a new block of size bytes and
- * returning a pointer to its beginning.
- *
- * If @p size is zero, safemalloc will allocate a single
- * byte, thus, ensuring that no issues should occur with
- * an accidental dereference.
- *
- * @param ptr Pointer to be reallocated, or NULL.
- * @param size New size.
- *
- * @return If success, returns a void pointer pointing to the
- * memory block allocated. On error, (if realloc failed or
- * invalid pointer) the should may return
- * NULL or abort the execution, accordingly with the
- * _on_error_ flag set on sf_init(). ON_ERROR_ABORT is
- * set by default.
- */
-void *_sf_realloc(void *ptr, size_t size
-#ifndef SFMALLOC_SAVE_SPACE
-	,const char *file, const char *func, int line
-#endif
-)
+
+void *_sf_xmalloc(size_t size ,const char *file, const char *func, int line)
 {
-	struct address *addr     = NULL;
-	struct address *new_addr = NULL;
-
-	sf_init(VERBOSE_MODE_2, ON_ERROR_ABORT);
-
-	/*
-	 * Size equals 0 is implementation-defined, in order to avoid
-	 * undefined behaviour, safemalloc will allocate a single-byte
-	 * memory block that can be freed with sf_free().
-	 *
-	 * See here: https://stackoverflow.com/q/16759849/3594716
-	 * for more infos about.
-	 */
-	if (!size)
-		size = 1;
-
-	/*
-	 * Remove from the hashtable, if a valid address.
-	 *
-	 * The reasoning behind this is simple: the address _may_
-	 * be different from the previously allocated, and thus,
-	 * the hash too.
-	 */
-	if (ptr != NULL)
-	{
-SF_MUTEX_LOCK();
-		addr = hashtable_remove(&sf.ht, (uintptr_t)ptr);
-SF_MUTEX_UNLOCK();
-
-		CHECK_ADDR(addr, return NULL,
-			"sfrealloc: invalid address: %p!\n"
-			"make sure that the address was previously allocated by "
-			"[m,c,re]alloc!\n", ptr);
-	}
-
-	/* Try to allocate memory. */
-	new_addr = realloc_fn(addr, sizeof(struct address) + size);
-
-	/*
-	 * If ptr != NULL and ptr == NULL, realloc should return with
-	 * errors, but should not deallocate the previous address, thus,
-	 * we need to insert again in the hashtable, before emiting
-	 * errors with CHECK_ADDR =/.
-	 */
-	if (ptr != NULL && new_addr == NULL)
-	{
-SF_MUTEX_LOCK();
-		if (hashtable_add(&sf.ht, addr) < 0)
-		{
-			/* CHECK_ADDR expects that sf_mutex is unlocked. */
-			SF_MUTEX_UNLOCK();
-
-			free_fn(addr);
-			CHECK_ADDR(NULL, return NULL,
-				"realloc: failed while re-adding into the list!\n");
-		}
-		else
-			SF_MUTEX_UNLOCK();
-	}
-	CHECK_ADDR(new_addr, return NULL,
-		"realloc: failed while allocating %zu bytes!\n", size);
-
-	addr = new_addr;
-
-	/* Fill struct addr fields. */
-	addr->address = (uintptr_t)(addr+1);
-	addr->next    = NULL;
-
-    size_t origin_size = addr->bytes;
-#ifndef SFMALLOC_SAVE_SPACE
-	addr->bytes = size;
-	addr->file  = file;
-	addr->func  = func;
-	addr->line  = line;
-#endif
-
-SF_MUTEX_LOCK();
-	/* Fill some infos. */
-	sf.total_allocated += size;
-	sf.realloc_calls++;
-#ifndef SFMALLOC_SAVE_SPACE
-	if (sf.current_memory)
-		sf.current_memory -= origin_size;
-	sf.current_memory += size;
-	if (sf.current_memory > sf.peak_memory)
-		sf.peak_memory = sf.current_memory;
-#endif
-
-	/* Add into the addresses list. */
-	if (hashtable_add(&sf.ht, addr) < 0)
-	{
-		/* CHECK_ADDR expects that sf_mutex is unlocked. */
-		SF_MUTEX_UNLOCK();
-
-		free_fn(addr);
-		CHECK_ADDR(NULL, return NULL,
-			"realloc: failed while adding into the list!\n");
-	}
-	else
-		SF_MUTEX_UNLOCK();
-
-	/* Return address. */
-	return ((void*)(addr+1));
+	void *m = _sf_malloc(size, file, func, line);
+	if (!m)
+		exit(SFMALLOC_EXIT_FAILURE);
+	return m;
 }
 
-/**
- * Frees the memory space pointed to by ptr, which
- * must have been returned by a previous call to
- * sf_malloc(), sf_calloc(), or sfrealloc().
- *
- * If free(ptr) has already been called before and/or,
- * if @p ptr is an invalid pointer sffree may silently
- * returns or abort execution with or without verbose
- * mode, accordingly with the initial flags set on
- * sf_init().
- *
- * If @p ptr is NULL, no operation is performed.
- */
-void _sf_free(void *ptr
-#ifndef SFMALLOC_SAVE_SPACE
-	,const char *file, const char *func, int line
-#endif
-)
-{
-	struct address *addr;
 
+void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, int line)
+{
+	ASSERT_STATE();
+	if (size + 5 >= SIZE_MAX / nmemb) { // +5 cause off-by-one errors paranoia me.
+		sfm_warn("[calloc] nmemb * size overflowed", file, func, line);
+		return NULL;
+	}
+
+	size_t s = size * nmemb; // TODO : to size_t overflow check
+	if (!s) {
+		sfm_warn("[calloc] trying to zero bytes", file, func, line);
+		return NULL;
+	}
+
+	struct address *p = calloc_fn(1, s + sizeof(struct address));
+	if (!p)
+		return NULL;
+
+	if (record_alloc(p, s, file, func, line) != 0) {
+		free_fn(p);
+		sfm_fail_die("[calloc] failed to record allocation", file, func, line);
+	}
+
+	SF_MUTEX_LOCK();
+	++sf.calloc_calls;
+	SF_MUTEX_UNLOCK();
+
+	return p + 1;
+}
+
+
+void *_sf_xcalloc(size_t nmemb, size_t size, const char *file, const char *func, int line)
+{
+	void *m = _sf_calloc(nmemb, size, file, func, line);
+	if (!m)
+		return NULL;
+	return m;
+}
+
+
+void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, int line)
+{
+	ASSERT_STATE();
+	if (!size) {
+		sfm_warn("[realloc] trying to zero bytes", file, func, line);
+		return NULL;
+	}
+	
+	SF_MUTEX_LOCK();
+	if (ptr) {
+		struct address *p_old = hashtable_remove(&sf.ht, (uintptr_t)ptr);
+		if (!p_old)
+			sfm_fail_die("[realloc] failed to unregister old memory", file, func, line);
+		sf.current_memory -= p_old->bytes;
+	}
+	SF_MUTEX_UNLOCK();
+
+	struct address *p_new = realloc_fn(ptr, size);
+	if (!p_new)
+		return NULL;
+
+	if (record_alloc(p_new, size, file, func, line) != 0) {
+		free_fn(p_new);
+		sfm_fail_die("[realloc] failed to record allocation", file, func, line);
+	}
+
+	SF_MUTEX_LOCK();
+	++sf.realloc_calls;
+	SF_MUTEX_UNLOCK();
+
+	return p_new + 1;
+}
+
+
+void *_sf_xrealloc(void *ptr, size_t size, const char *file, const char *func, int line)
+{
+	void *m = _sf_realloc(ptr, size, file, func, line);
+	if (!m)
+		return NULL;
+	return m;
+}
+
+
+void _sf_free(void *ptr, const char *file, const char *func, int line)
+{
+	ASSERT_STATE();
 	if (ptr == NULL)
-		return;
+		sfm_fail_die("trying to free nullptr.", file, func, line);
 
-	/* Attempts to remove the previous address. */
-SF_MUTEX_LOCK();
-	addr = hashtable_remove(&sf.ht, (uintptr_t)ptr);
-SF_MUTEX_UNLOCK();
-
-	CHECK_ADDR(addr, return,
-		"sffree: invalid address: %p!\nmaybe a double free?\n", ptr);
-
-SF_MUTEX_LOCK();
-
+	SF_MUTEX_LOCK();
+	struct address *p = hashtable_remove(&sf.ht, (uintptr_t)ptr);
+	++sf.free_calls;
 #ifndef SFMALLOC_SAVE_SPACE
-	sf.current_memory -= addr->bytes;
+	sf.current_memory -= p->bytes;
 #endif
+	SF_MUTEX_UNLOCK();
 
-	sf.free_calls++;
-SF_MUTEX_UNLOCK();
-
-	free_fn(addr);
+	free_fn(p);
 }
 
 /*===========================================================================*
@@ -695,13 +426,10 @@ static int hashtable_init(struct hashtable **ht)
  *
  * @return Returns 0 if success.
  */
-static int hashtable_finish(struct hashtable **ht)
+static int hashtable_finish(struct hashtable *h)
 {
-	struct hashtable *h;    /* Hashtable.    */
 	struct address *l_ptr;  /* List pointer. */
 	size_t i;               /* Loop index.   */
-
-	h = *ht;
 
 	/* Invalid array. */
 	if (h == NULL)
@@ -1045,115 +773,3 @@ static uint64_t hashtable_splitmix64_hash(uintptr_t key, size_t size)
 	x = x ^ (x >> 31);
 	return (x);
 }
-
-/*===========================================================================*
- *                               -.- Tests -.-                               *
- *===========================================================================*/
-
-/* Array size test. */
-#define ARRAY_SIZE  1024
-
-/* Set to 1 to dump all buckets. */
-#define DUMP_BUCKET 1
-
-/* Considers each element as an integer value. */
-#define BUCKET_AS_INTEGER 0
-
-/**
- * @brief Print some statistics regarding the bucket usage, collisions
- * and etc, useful to know if the currently hash function used is
- * performing as expected.
- *
- * @param ht Hashtable pointer.
- */
-#if HASHTABLE_ENABLE_STATS == 1
-static void hashtable_print_stats(struct hashtable **ht)
-{
-	struct hashtable *h;        /* Hashtable.           */
-	size_t used_buckets;        /* Used buckets.        */
-	struct address *l_ptr;      /* List pointer.        */
-	size_t max_bucket_size;     /* Max bucket size.     */
-	size_t one_element_buckets; /* One-element buckets. */
-	double elements_per_bucket; /* Elements per bucket. */
-	double variance;            /* Variance.            */
-	double stdev;               /* Standard Deviation.  */
-	double mean;                /* Mean.                */
-	size_t i;                   /* Loop index.          */
-
-	/* Initialize. */
-	max_bucket_size     = 0;
-	one_element_buckets = 0;
-	elements_per_bucket = 0;
-	used_buckets        = 0;
-	variance            = 0.0;
-	stdev               = 0.0;
-	mean                = 0.0;
-
-	h = *ht;
-
-	/* If valid hashtable. */
-	if (h == NULL || h->elements < 1)
-		return;
-
-#if DUMP_BUCKET
-	printf("Buckets:\n");
-#endif
-	for (i = 0; i < h->capacity; i++)
-	{
-		size_t bucket_size;
-		bucket_size = 0;
-
-#if DUMP_BUCKET
-		printf("Bucket[%zu] = ", i);
-#endif
-		l_ptr = h->bucket[i];
-		if (l_ptr != NULL)
-			used_buckets++;
-
-		while (l_ptr != NULL)
-		{
-			if (l_ptr->address != 0)
-			{
-				elements_per_bucket++;
-#if DUMP_BUCKET
-#if BUCKET_AS_INTEGER
-				printf("%d ", *((int *)l_ptr->value) );
-#else
-				printf("0x%p" " ", (uint64_t)l_ptr->address);
-#endif
-#endif
-			}
-			l_ptr = l_ptr->next;
-			bucket_size++;
-		}
-#if DUMP_BUCKET
-		printf("\n");
-#endif
-		if (bucket_size > max_bucket_size)
-			max_bucket_size = bucket_size;
-		if (bucket_size == 1)
-			one_element_buckets++;
-		if (bucket_size > 0)
-			variance += (bucket_size * bucket_size);
-	}
-
-	mean     = elements_per_bucket / used_buckets;
-	variance = (variance - (used_buckets * (mean*mean))) / (used_buckets - 1);
-	stdev    = sqrt(variance);
-
-	printf("--------------------------- Stats ---------------------------\n");
-	printf("Buckets available: %zu\n", h->capacity);
-	printf("Used buckets: %zu (%f%%)\n", used_buckets,
-		((double)used_buckets/h->capacity)*100);
-	printf("Max bucket size: %zu\n", max_bucket_size);
-	printf("One element buckets: %zu (%f%%)\n", one_element_buckets,
-		((double)one_element_buckets/used_buckets)*100);
-	printf("Mean elements per bucket: %f\n", mean);
-	printf("    Variance: %f\n", variance);
-	printf("    Standard Deviation: %f\n", stdev);
-#if HASHTABLE_DEBUG
-	printf("Collisions: %zu, elements: %zu\n", h->collisions, h->elements);
-#endif
-	printf("-------------------------------------------------------------\n");
-}
-#endif
