@@ -129,7 +129,7 @@ static void printf_rgb(const char *fmt, ...)
 		return;
 	}
 
-	char *tmp = calloc(1, msg_len + 1);
+	char *tmp = (char*)calloc(1, msg_len + 1);
 	if (!tmp) {
 		va_end(args);
 		return;
@@ -328,7 +328,7 @@ void *_sf_malloc(size_t size, const char *file, const char *func, int line)
 		return NULL;
 	}
 
-	struct address *p = malloc_fn(sizeof(struct address) + size);
+	struct address *p = (struct address*)malloc_fn(sizeof(struct address) + size);
 	if (!p)
 		return NULL;
 
@@ -371,7 +371,7 @@ void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, 
 		return NULL;
 	}
 
-	struct address *p = calloc_fn(1, s + sizeof(struct address));
+	struct address *p = (struct address*)calloc_fn(1, s + sizeof(struct address));
 	if (!p)
 		return NULL;
 
@@ -407,8 +407,8 @@ void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, in
 	
 	SF_MUTEX_LOCK();
 	// First, get over with realloc, so we can handle our fails cleanly.
-	struct address *pold = hashtable_get(&sf.ht, (uintptr_t)ptr); // this will be NULL for first allocation.
-	struct address *p = realloc_fn(pold, size + sizeof(struct address));
+	struct address *pold = (struct address*)hashtable_get(&sf.ht, (uintptr_t)ptr); // this will be NULL for first allocation.
+	struct address *p = (struct address*)realloc_fn(pold, size + sizeof(struct address));
 	if (!p) {
 		SF_MUTEX_UNLOCK();
 		return NULL;
@@ -416,7 +416,7 @@ void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, in
 
 	// Attempt to remove @p ptr from hashtable. If this fails, the program must die.
 	// It will most likely fail due to user fault (calling with invalid ptr)
-	pold = hashtable_remove(&sf.ht, (uintptr_t)ptr);
+	pold = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)ptr);
 	if (ptr && pold == NULL) {
 		SF_MUTEX_UNLOCK();
 		sfm_fail_die("[realloc] Failed to remove allocation from hashtable."
@@ -456,7 +456,7 @@ void _sf_free(void *ptr, const char *file, const char *func, int line)
 		sfm_fail_die("trying to free nullptr.", file, func, line);
 
 	SF_MUTEX_LOCK();
-	struct address *p = hashtable_remove(&sf.ht, (uintptr_t)ptr);
+	struct address *p = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)ptr);
 	SF_MUTEX_UNLOCK();
 	if (!p) {
 		sfm_fail_die("Trying to free invalid address."
@@ -493,13 +493,13 @@ void _sf_free(void *ptr, const char *file, const char *func, int line)
 static int hashtable_init(struct hashtable **ht)
 {
 	struct hashtable *out;
-	out = calloc_fn(1, sizeof(struct hashtable));
+	out = (struct hashtable*)calloc_fn(1, sizeof(struct hashtable));
 	if (out == NULL)
 		return (-1);
 
 	out->capacity = HASHTABLE_DEFAULT_SIZE;
 	out->elements = 0;
-	out->bucket   = calloc_fn(out->capacity, sizeof(void *));
+	out->bucket   = (struct address**)calloc_fn(out->capacity, sizeof(void *));
 	if (out->bucket == NULL)
 	{
 		free_fn(out);
@@ -607,7 +607,7 @@ static int hashtable_resize(struct hashtable **ht, size_t new_size)
 		return (-1);
 
 	/* Allocate new buckets. */
-	new_buckets = calloc_fn(new_size, sizeof(void *));
+	new_buckets = (struct address**)calloc_fn(new_size, sizeof(void *));
 	if (new_buckets == NULL)
 		return (-1);
 
