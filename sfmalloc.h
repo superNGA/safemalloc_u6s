@@ -108,60 +108,52 @@
 
 
 /* Behaviour macros. */
-#define VERBOSE_MODE_1  1 /* Suppress all messages.      */
-#define VERBOSE_MODE_2  2 /* Only errors messages.       */
-#define VERBOSE_MODE_3  (VERBOSE_MODE_1 & VERBOSE_MODE_2) /* Full verbose.               */
-#define ON_ERROR_ABORT  1 /* Abort if any error.         */
-#define ON_ERROR_EXIT   2 /* Exit if any error.          */
-#define ON_ERROR_NULL   4 /* Just returns NULL if error. */
+#define VERBOSE_NONE      (0) // No messages
+#define VERBOSE_DESC      (1 << 0) // Only memory usages metrics
+#define VERBOSE_LEAK_DUMP (1 << 1) // Dump all detected leaks
+#define VERBOSE_FULL      (VERBOSE_DESC | VERBOSE_LEAK_DUMP) // Max verbose
 
 
-	/**
-	 * SafeMalloc main structure
-	 *
-	 * This struct holds the main data for the library
-	 * be able to work. Note that this is not dynamically
-	 * allocated and its declaration belongs to sfmalloc.c
-	 * as a global variable.
-	 */
-	struct safemalloc
-	{
-		/* Hashtable. */
-		struct hashtable *ht;
+/**
+* SafeMalloc main structure
+*
+* This struct holds the main data for the library
+* be able to work. Note that this is not dynamically
+* allocated and its declaration belongs to sfmalloc.c
+* as a global variable.
+*/
+struct safemalloc
+{
+	/* Hashtable. */
+	struct hashtable *ht;
 
-		int initialized;
+	int initialized;
 
-		/* Behaviour. */
-		int verbose_mode;
-		int on_error;
+	/* Behaviour. */
+	int verbose_mode;
+	int on_error;
 
-		size_t total_allocated;
-		size_t peak_memory;
-		size_t current_memory;
+	size_t total_allocated;
+	size_t peak_memory;
+	size_t current_memory;
 
-		// NOTE : Only successful calls are recorded.
-		size_t malloc_calls;
-		size_t calloc_calls;
-		size_t realloc_calls;
-		size_t free_calls;
-	};
+	// NOTE : Only successful calls are recorded.
+	size_t malloc_calls;
+	size_t calloc_calls;
+	size_t realloc_calls;
+	size_t free_calls;
+};
 
-	/* External functions. */
-	extern void sf_free_all(void);
-	extern int sf_init(int verbose_mode, int on_error);
+/* External functions. */
+extern int sf_init(int verbose_mode);
+extern void sf_uninit(void);
 
-#ifndef SF_DISABLE_SIGNAL_HANDLERS
-	extern void sf_reg_sigint(void (*handler)(int));
-	extern void sf_reg_sigterm(void (*handler)(int));
-#endif
-
-
-	/**
-	 * Macros that expands to the real functions
-	 *
-	 * These macros help to obtain allocation info at compile time
-	 * like: filename, function name and line number.
-	 */
+/**
+* Macros that expands to the real functions
+*
+* These macros help to obtain allocation info at compile time
+* like: filename, function name and line number.
+*/
 #ifndef SFMALLOC_SAVE_SPACE
 	#define sf_malloc(size)        _sf_malloc((size), __FILE__, __func__, __LINE__)
 	#define sf_xmalloc(size)        _sf_xmalloc((size), __FILE__, __func__, __LINE__)

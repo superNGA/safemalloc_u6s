@@ -28,6 +28,7 @@
 #include "sfmalloc.h"
 #include <assert.h>
 #include <stdarg.h>
+#include <math.h>
 
 
 // colorful terminal text
@@ -37,16 +38,15 @@
 #define LOGCLR_GREEN   "\033[32m"
 #define LOGCLR_YELLOW  "\033[33m"
 #define LOGCLR_RED     "\033[31m"
+#define LOGCLR_LIGHTGRAY "\033[38;2;240;240;240m"
+#define LOGCLR_DARKGRAY "\033[38;2;100;100;100m"
 #define LOG(fmt, ...) printf(fmt"\n", ##__VA_ARGS__)
 
 
-#define ASSERT_STATE() assert(!sf.initialized)
+#define ASSERT_STATE() assert(sf.initialized)
 
 
-
-/*
- * SafeMalloc main context structure.
- */
+// SafeMalloc main context structure.
 static struct safemalloc sf = {
 	0, 0, 0, 0, 0,
 #ifndef SFMALLOC_SAVE_SPACE
@@ -94,77 +94,64 @@ static int hashtable_cmp_ptr(uintptr_t key1, uintptr_t key2);
 static uint64_t hashtable_splitmix64_hash(uintptr_t key, size_t size);
 
 
+/* Do not worry about why a malloc wrapper needs rgb to hsv functions. 
+ * It is only for printing the report in the end. */
+typedef struct { float h, s, v; } hsv;
+typedef struct { float r, g, b; } rgb;
+rgb hsv_to_rgb(hsv c) {
+    float h = fmodf(fmodf(c.h, 360.0f) + 360.0f, 360.0f);
+    float x = c.v * c.s * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+    float m = c.v * (1.0f - c.s);
+    float r = 0.0f, g = 0.0f, b = 0.0f;
 
-void sf_log_leaks()
-{
-	SFMTX_ASSERT_LOCK();
-	LOG(LOGCLR_RED);
-	struct hashtable *h = sf.ht;
-	if (!h)
-		return;
+    if      (h < 60.0f)  { r = c.v * c.s; g = x; }
+    else if (h < 120.0f) { r = x; g = c.v * c.s; }
+    else if (h < 180.0f) { g = c.v * c.s; b = x; }
+    else if (h < 240.0f) { g = x; b = c.v * c.s; }
+    else if (h < 300.0f) { r = x; b = c.v * c.s; }
+    else                 { r = c.v * c.s; b = x; }
 
-	for (struct address **lpp = h->bucket; lpp < h->bucket + h->capacity; ++lpp) {
-		struct address *lp = *lpp;
-		for (; lp; lp = lp->next) {
-			LOG("memory leak of %zu bytes", lp->bytes);
-#ifndef SFMALLOC_SAVE_SPACE
-			LOG("file : %s, [line: %d]", lp->file, lp->line);
-			LOG("func : %s", lp->func);
-#endif // SFMALLOC_SAVE_SPACE
-		}
-	}
-	LOG(LOGCLR_RESET);
+    return (rgb){ r + m, g + m, b + m };
 }
 
-/**
- * Deallocates all the memory at the process termination, warns
- * the user for possible memory leaks (if VERBOSE_MODE_2) and
- * shows the data gathere at the moment.
- */
-static void sf_uninit(void)
+
+static void printf_rgb(const char *fmt, ...)
 {
-	SF_MUTEX_LOCK();
-	if (sf.verbose_mode == VERBOSE_MODE_3) {
-		if (sf.ht->elements) {
-			LOG(LOGCLR_RED);
-			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
-			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
-			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
-		}
-		else {
-			LOG(LOGCLR_GREEN);
-			LOG("NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:");
-			LOG(")!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAK");
-			LOG("S:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LE");
-		}
-		LOG(LOGCLR_RESET);
-		LOG("SafeMalloc");
-		LOG("");
-		LOG("total memory allocated : %zu", sf.total_allocated);
-		LOG("peak memory consumption : %zu", sf.peak_memory);
-		LOG("");
-		LOG("malloc calls  : %zu", sf.malloc_calls);
-		LOG("calloc calls  : %zu", sf.calloc_calls);
-		LOG("realloc calls : %zu", sf.realloc_calls);
-		LOG("free calls    : %zu", sf.free_calls);
+	va_list args, copy;
+	va_start(args, fmt);
+	va_copy(copy, args);
+
+	int msg_len = vsnprintf(NULL, 0, fmt, copy);
+	va_end(copy);
+
+	if (msg_len <= 0) {
+		va_end(args);
+		return;
 	}
-	if (sf.verbose_mode & VERBOSE_MODE_2)
-		sf_log_leaks();
 
-	hashtable_finish(sf.ht);
-	sf.ht = NULL;
-	SF_MUTEX_UNLOCK();
+	char *tmp = calloc(1, msg_len + 1);
+	if (!tmp) {
+		va_end(args);
+		return;
+	}
 
-#ifdef _WIN32
-	CloseHandle(ghMutex);
-#else
-	pthread_mutex_destroy(&sf_mutex);
-#endif
+	vsnprintf(tmp, msg_len + 1, fmt, args);
+	static float h = 0.0;
+	for (int i = 0; i < msg_len; ++i) {
+		rgb clr = hsv_to_rgb((hsv){.h = h, .s = 1.0, .v = 1.0});
+		printf("\033[38;2;%d;%d;%dm", (int)(clr.r * 255.0), (int)(clr.g * 255.0), (int)(clr.b * 255.0));
+		putchar(tmp[i]);
+		h += 5.0;
+	}
+
+	free(tmp);
+	va_end(args);
 }
 
 
 static void sfm_fail_die(const char *msg, const char *file, const char *func, int line)
 {
+	SFMTX_ASSERT_UNLOCK();
 	static const char nullstr[] = "null";
 	printf(LOGCLR_RED);
 	{
@@ -193,7 +180,93 @@ static void sfm_warn(const char *msg, const char *file, const char *func, int li
 }
 
 
-int sf_init(int vlvl, int er_rout)
+void sf_log_leaks()
+{
+	SFMTX_ASSERT_LOCK();
+	LOG(LOGCLR_RED);
+	struct hashtable *h = sf.ht;
+	if (!h)
+		return;
+
+	size_t leak = 0, n = 0;
+	for (struct address **lpp = h->bucket; lpp < h->bucket + h->capacity; ++lpp) {
+		struct address *lp = *lpp;
+		for (; lp; lp = lp->next) {
+			printf(LOGCLR_RED);
+			LOG("memory leak #%zu of %zu bytes", ++n, lp->bytes);
+#ifndef SFMALLOC_SAVE_SPACE
+			printf(LOGCLR_LIGHTGRAY);
+			LOG("file : %s, [line: %d]", lp->file, lp->line);
+			LOG("func : %s", lp->func);
+#endif // SFMALLOC_SAVE_SPACE
+			leak += lp->bytes;
+		}
+	}
+	if (leak) {
+		printf(LOGCLR_RED);
+		LOG("[CONCLUSION] %zu byte(s) leaked through %zu leak(s)\n", leak, n);
+	}
+}
+
+
+/**
+ * Deallocates all the memory at the process termination, warns
+ * the user for possible memory leaks (if VERBOSE_MODE_2) and
+ * shows the data gathere at the moment.
+ */
+void sf_uninit(void)
+{
+	SF_MUTEX_LOCK();
+	if (sf.verbose_mode & VERBOSE_DESC) {
+		if (sf.ht->elements) {
+			printf(LOGCLR_RED);
+			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
+			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
+			LOG("LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(LEAK-DETECTED:(");
+		}
+		else {
+			printf(LOGCLR_GREEN);
+			printf_rgb("NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:\n");
+			printf_rgb(")!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAK\n");
+			printf_rgb("S:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LEAKS:)!NO-LE\n");
+		}
+		printf(LOGCLR_DARKGRAY);
+		LOG("-------------------------------------------");
+		printf(LOGCLR_RESET);
+
+		LOG("SafeMalloc");
+
+		printf(LOGCLR_DARKGRAY);
+		LOG("-------------------------------------------");
+		printf(LOGCLR_RESET);
+
+		LOG("total memory allocated  : %zu", sf.total_allocated);
+		LOG("peak memory consumption : %zu", sf.peak_memory);
+		LOG("malloc calls  : %zu", sf.malloc_calls);
+		LOG("calloc calls  : %zu", sf.calloc_calls);
+		LOG("realloc calls : %zu", sf.realloc_calls);
+		LOG("free calls    : %zu", sf.free_calls);
+
+		printf(LOGCLR_DARKGRAY);
+		LOG("-------------------------------------------");
+		printf(LOGCLR_RESET);
+	}
+	if (sf.verbose_mode & VERBOSE_LEAK_DUMP)
+		sf_log_leaks();
+
+	hashtable_finish(sf.ht);
+	sf.ht = NULL;
+	SF_MUTEX_UNLOCK();
+
+#ifdef _WIN32
+	CloseHandle(ghMutex);
+#else
+	pthread_mutex_destroy(&sf_mutex);
+#endif
+}
+
+
+int sf_init(int verbose)
 {
 #ifdef _WIN32
 	if (!ghMutex) {
@@ -207,14 +280,12 @@ int sf_init(int vlvl, int er_rout)
 
 	SF_MUTEX_LOCK();
 	assert(!sf.initialized && "initializing sf twice!");
-	assert(vlvl == VERBOSE_MODE_1 || vlvl == VERBOSE_MODE_2 || vlvl == VERBOSE_MODE_3);
-	assert(er_rout == ON_ERROR_ABORT || er_rout == ON_ERROR_EXIT || er_rout == ON_ERROR_NULL);
+	assert((verbose & ~VERBOSE_FULL) == 0 && "Invalid verbose flag");
 
 	if (hashtable_init(&sf.ht) < 0)
-		sfm_fail_die("sf_init: an error has ocurred while allocating hashtable.", NULL, NULL, NULL);
+		sfm_fail_die("sf_init: an error has ocurred while allocating hashtable.", NULL, NULL, 0);
 
-	sf.verbose_mode = vlvl;
-	sf.on_error     = er_rout;
+	sf.verbose_mode = verbose;
 	sf.initialized  = 1;
 	SF_MUTEX_UNLOCK();
 	return 0;
@@ -223,6 +294,7 @@ int sf_init(int vlvl, int er_rout)
 
 static int record_alloc(struct address *p, size_t s, const char *file, const char *func, int line)
 {
+	SFMTX_ASSERT_UNLOCK();
 	p->address = (uintptr_t)(p+1);
 	p->next    = NULL;
 	p->bytes   = s;
@@ -285,6 +357,9 @@ void *_sf_xmalloc(size_t size ,const char *file, const char *func, int line)
 void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, int line)
 {
 	ASSERT_STATE();
+	if (!nmemb || !size)
+		return NULL;
+
 	if (size + 5 >= SIZE_MAX / nmemb) { // +5 cause off-by-one errors paranoia me.
 		sfm_warn("[calloc] nmemb * size overflowed", file, func, line);
 		return NULL;
@@ -317,7 +392,7 @@ void *_sf_xcalloc(size_t nmemb, size_t size, const char *file, const char *func,
 {
 	void *m = _sf_calloc(nmemb, size, file, func, line);
 	if (!m)
-		return NULL;
+		exit(SFMALLOC_EXIT_FAILURE);
 	return m;
 }
 
@@ -331,28 +406,37 @@ void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, in
 	}
 	
 	SF_MUTEX_LOCK();
-	if (ptr) {
-		struct address *p_old = hashtable_remove(&sf.ht, (uintptr_t)ptr);
-		if (!p_old)
-			sfm_fail_die("[realloc] failed to unregister old memory", file, func, line);
-		sf.current_memory -= p_old->bytes;
+	// First, get over with realloc, so we can handle our fails cleanly.
+	struct address *pold = hashtable_get(&sf.ht, (uintptr_t)ptr); // this will be NULL for first allocation.
+	struct address *p = realloc_fn(pold, size + sizeof(struct address));
+	if (!p) {
+		SF_MUTEX_UNLOCK();
+		return NULL;
+	}
+
+	// Attempt to remove @p ptr from hashtable. If this fails, the program must die.
+	// It will most likely fail due to user fault (calling with invalid ptr)
+	pold = hashtable_remove(&sf.ht, (uintptr_t)ptr);
+	if (ptr && pold == NULL) {
+		SF_MUTEX_UNLOCK();
+		sfm_fail_die("[realloc] Failed to remove allocation from hashtable."
+				"Make sure you allocated it using sf_realloc", file, func, line);
+		return NULL;
 	}
 	SF_MUTEX_UNLOCK();
 
-	struct address *p_new = realloc_fn(ptr, size);
-	if (!p_new)
-		return NULL;
-
-	if (record_alloc(p_new, size, file, func, line) != 0) {
-		free_fn(p_new);
+	// add new entry to hash-table
+	if (record_alloc(p, size, file, func, line) != 0) {
+		free_fn(p);
 		sfm_fail_die("[realloc] failed to record allocation", file, func, line);
 	}
 
 	SF_MUTEX_LOCK();
 	++sf.realloc_calls;
+	sf.current_memory -= pold ? pold->bytes : 0;
 	SF_MUTEX_UNLOCK();
 
-	return p_new + 1;
+	return p + 1;
 }
 
 
@@ -360,7 +444,7 @@ void *_sf_xrealloc(void *ptr, size_t size, const char *file, const char *func, i
 {
 	void *m = _sf_realloc(ptr, size, file, func, line);
 	if (!m)
-		return NULL;
+		exit(SFMALLOC_EXIT_FAILURE);
 	return m;
 }
 
@@ -373,14 +457,21 @@ void _sf_free(void *ptr, const char *file, const char *func, int line)
 
 	SF_MUTEX_LOCK();
 	struct address *p = hashtable_remove(&sf.ht, (uintptr_t)ptr);
-	++sf.free_calls;
-#ifndef SFMALLOC_SAVE_SPACE
+	SF_MUTEX_UNLOCK();
+	if (!p) {
+		sfm_fail_die("Trying to free invalid address."
+				"Make sure you allocated ptr using safemalloc", file, func, line);
+		return;
+	}
+
+	SF_MUTEX_LOCK();
 	sf.current_memory -= p->bytes;
-#endif
+	++sf.free_calls;
 	SF_MUTEX_UNLOCK();
 
 	free_fn(p);
 }
+
 
 /*===========================================================================*
  *                                                                           *
