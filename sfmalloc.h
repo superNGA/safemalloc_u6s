@@ -33,6 +33,7 @@
 #else
 	#include <unistd.h>
 	#include <pthread.h>
+	#include <sys/mman.h> // mmap() support
 #endif
 	#include <math.h>
 	#include <signal.h>
@@ -55,6 +56,9 @@
 #define calloc_fn   calloc
 #define realloc_fn  realloc
 #define free_fn     free
+
+#define mmap_fn mmap
+#define munmap_fn munmap
 
 /**
 * Custom exit error code.
@@ -142,11 +146,14 @@ struct safemalloc
 	size_t calloc_calls;
 	size_t realloc_calls;
 	size_t free_calls;
+	size_t mmap_calls;
+	size_t munmap_calls;
 };
 
 /* External functions. */
 extern int sf_init(int verbose_mode);
 extern void sf_uninit(void);
+
 
 /**
 * Macros that expands to the real functions
@@ -165,6 +172,12 @@ extern void sf_uninit(void);
 	#define sf_xrealloc(ptr, size)  _sf_xrealloc((ptr), (size), __FILE__, __func__, __LINE__)
 
 	#define sf_free(ptr)           _sf_free((ptr), __FILE__, __func__, __LINE__)
+
+	#define sf_mmap(addr, len, prot, flags, fd, offset) _sf_mmap(addr, len, \
+			prot, flags, fd, offset, __FILE__, __func__, __LINE__)
+	#define sf_xmmap(addr, len, prot, flags, fd, offset) _sf_mmap(addr, len, \
+			prot, flags, fd, offset, __FILE__, __func__, __LINE__)
+	#define sf_munmap(addr, len) _sf_munmap(addr, len, __FILE__, __func__, __LINE__)
 #else
 	#define sf_malloc(size) _sf_malloc((size), 0, 0, 0)
 	#define sf_xmalloc(size) _sf_xmalloc((size), 0, 0, 0)
@@ -176,6 +189,10 @@ extern void sf_uninit(void);
 	#define sf_xrealloc(ptr, size) _sf_xrealloc((ptr), (size), 0, 0, 0)
 
 	#define sf_free(ptr) _sf_free((ptr), 0, 0, 0)
+
+	#define sf_mmap(addr, len, prot, flags, fd, offset) _sf_mmap(addr, len, prot, flags, fd, offset, 0, 0, 0)
+	#define sf_xmmap(addr, len, prot, flags, fd, offset) _sf_mmap(addr, len, prot, flags, fd, offset, 0, 0, 0)
+	#define sf_munmap(addr, len) _sf_munmap(addr, len, 0, 0, 0)
 #endif
 extern void *_sf_malloc(size_t size, const char *file, const char *func, int line);
 extern void *_sf_xmalloc(size_t size, const char *file, const char *func, int line);
@@ -187,6 +204,12 @@ extern void *_sf_realloc(void *ptr, size_t size, const char *file, const char *f
 extern void *_sf_xrealloc(void *ptr, size_t size, const char *file, const char *func, int line);
 
 extern void _sf_free(void *ptr, const char *file, const char *func, int line);
+
+extern void *_sf_mmap(void *__addr, size_t __len, int __prot, int __flags, int __fd, __off_t __offset,
+		const char *file, const char *func, int line);
+extern void *_sf_xmmap(void *__addr, size_t __len, int __prot, int __flags, int __fd, __off_t __offset,
+		const char *file, const char *func, int line);
+extern void _sf_munmap(void *__addr, size_t __len, const char *file, const char *func, int line);
 
 
 

@@ -44,6 +44,7 @@
 
 
 #define ASSERT_STATE() assert(sf.initialized)
+static const char nullstr[] = "null";
 
 
 // SafeMalloc main context structure.
@@ -148,18 +149,40 @@ static void printf_rgb(const char *fmt, ...)
 	va_end(args);
 }
 
+#define ARR_SIZE(arr) (sizeof(arr) / sizeof(arr[0]))
+static const char* bytes_fmt_tmp(size_t b)
+{
+	static char bufarr[8][128] = {0};
+	static const size_t n_bufs = ARR_SIZE(bufarr);
+	static const size_t bufsize = sizeof(bufarr[0]);
+	static int i = 0;
+
+	char *buf = bufarr[i++];
+	if (i >= n_bufs)
+		i = 0;
+
+	static const char *sfxlist[] = {"B", "KB", "MB", "GB", "TB"};
+	size_t div = 1, p = 0; // div = sfxlist[p] bytes at all times.
+	while ((div * 1024) <= b && p < ARR_SIZE(sfxlist) - 1) {
+		div *= 1024;
+		++p;
+	}
+
+	snprintf(buf, bufsize, "%.2f %s", (double)b / (double)div, sfxlist[p]);
+	return buf;
+}
+
 
 static void sfm_fail_die(const char *msg, const char *file, const char *func, int line)
 {
 	SFMTX_ASSERT_UNLOCK();
-	static const char nullstr[] = "null";
 	printf(LOGCLR_RED);
 	{
-		printf("=============== FATAL ERROR ===============");
-		printf("%s", msg);
-		printf("file : %s", file ? file : nullstr);
-		printf("func : %s", func ? func : nullstr);
-		printf("line : %d", line);
+		LOG("=============== FATAL ERROR ===============");
+		LOG("%s", msg);
+		LOG("file : %s", file ? file : nullstr);
+		LOG("func : %s", func ? func : nullstr);
+		LOG("line : %d", line);
 	}
 	printf(LOGCLR_RESET);
 	exit(SFMALLOC_EXIT_FAILURE);
@@ -168,7 +191,6 @@ static void sfm_fail_die(const char *msg, const char *file, const char *func, in
 
 static void sfm_warn(const char *msg, const char *file, const char *func, int line)
 {
-	static const char nullstr[] = "null";
 	printf(LOGCLR_YELLOW);
 	{
 		printf("%s", msg);
@@ -193,11 +215,11 @@ void sf_log_leaks()
 		struct address *lp = *lpp;
 		for (; lp; lp = lp->next) {
 			printf(LOGCLR_RED);
-			LOG("memory leak #%zu of %zu bytes", ++n, lp->bytes);
+			LOG("memory leak #%zu of %s", ++n, bytes_fmt_tmp(lp->bytes));
 #ifndef SFMALLOC_SAVE_SPACE
 			printf(LOGCLR_LIGHTGRAY);
-			LOG("file : %s, [line: %d]", lp->file, lp->line);
-			LOG("func : %s", lp->func);
+			LOG("file : %s, [line: %d]", lp->file ? lp->file : nullstr, lp->line);
+			LOG("func : %s", lp->func ? lp->func : nullstr);
 #endif // SFMALLOC_SAVE_SPACE
 			leak += lp->bytes;
 		}
@@ -240,12 +262,14 @@ void sf_uninit(void)
 		LOG("-------------------------------------------");
 		printf(LOGCLR_RESET);
 
-		LOG("total memory allocated  : %zu", sf.total_allocated);
-		LOG("peak memory consumption : %zu", sf.peak_memory);
+		LOG("total memory allocated  : %s", bytes_fmt_tmp(sf.total_allocated));
+		LOG("peak memory consumption : %s", bytes_fmt_tmp(sf.peak_memory));
 		LOG("malloc calls  : %zu", sf.malloc_calls);
 		LOG("calloc calls  : %zu", sf.calloc_calls);
 		LOG("realloc calls : %zu", sf.realloc_calls);
 		LOG("free calls    : %zu", sf.free_calls);
+		LOG("mmap calls    : %zu", sf.mmap_calls);
+		LOG("munmap calls  : %zu", sf.munmap_calls);
 
 		printf(LOGCLR_DARKGRAY);
 		LOG("-------------------------------------------");
@@ -292,10 +316,10 @@ int sf_init(int verbose)
 }
 
 
-static int record_alloc(struct address *p, size_t s, const char *file, const char *func, int line)
+static int record_alloc(struct address *p, void *mem, size_t s, const char *file, const char *func, int line)
 {
 	SFMTX_ASSERT_UNLOCK();
-	p->address = (uintptr_t)(p+1);
+	p->address = (uintptr_t)mem;
 	p->next    = NULL;
 	p->bytes   = s;
 #ifndef SFMALLOC_SAVE_SPACE
@@ -332,7 +356,7 @@ void *_sf_malloc(size_t size, const char *file, const char *func, int line)
 	if (!p)
 		return NULL;
 
-	if (record_alloc(p, size, file, func, line) != 0) {
+	if (record_alloc(p, p + 1, size, file, func, line) != 0) {
 		free_fn(p);
 		sfm_fail_die("[malloc] failed to record allocation", file, func, line);
 	}
@@ -349,7 +373,7 @@ void *_sf_xmalloc(size_t size ,const char *file, const char *func, int line)
 {
 	void *m = _sf_malloc(size, file, func, line);
 	if (!m)
-		exit(SFMALLOC_EXIT_FAILURE);
+		sfm_fail_die("malloc failed. dying now", file, func, line);
 	return m;
 }
 
@@ -375,7 +399,7 @@ void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, 
 	if (!p)
 		return NULL;
 
-	if (record_alloc(p, s, file, func, line) != 0) {
+	if (record_alloc(p, p + 1, s, file, func, line) != 0) {
 		free_fn(p);
 		sfm_fail_die("[calloc] failed to record allocation", file, func, line);
 	}
@@ -392,7 +416,7 @@ void *_sf_xcalloc(size_t nmemb, size_t size, const char *file, const char *func,
 {
 	void *m = _sf_calloc(nmemb, size, file, func, line);
 	if (!m)
-		exit(SFMALLOC_EXIT_FAILURE);
+		sfm_fail_die("calloc failed. dying now", file, func, line);
 	return m;
 }
 
@@ -417,7 +441,8 @@ void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, in
 	// Attempt to remove @p ptr from hashtable. If this fails, the program must die.
 	// It will most likely fail due to user fault (calling with invalid ptr)
 	pold = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)ptr);
-	if (ptr && pold == NULL) {
+	int first_entry = ptr == NULL;
+	if (!first_entry && pold == NULL) {
 		SF_MUTEX_UNLOCK();
 		sfm_fail_die("[realloc] Failed to remove allocation from hashtable."
 				"Make sure you allocated it using sf_realloc", file, func, line);
@@ -426,7 +451,7 @@ void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, in
 	SF_MUTEX_UNLOCK();
 
 	// add new entry to hash-table
-	if (record_alloc(p, size, file, func, line) != 0) {
+	if (record_alloc(p, p + 1, size, file, func, line) != 0) {
 		free_fn(p);
 		sfm_fail_die("[realloc] failed to record allocation", file, func, line);
 	}
@@ -444,7 +469,7 @@ void *_sf_xrealloc(void *ptr, size_t size, const char *file, const char *func, i
 {
 	void *m = _sf_realloc(ptr, size, file, func, line);
 	if (!m)
-		exit(SFMALLOC_EXIT_FAILURE);
+		sfm_fail_die("realloc failed. dying now", file, func, line);
 	return m;
 }
 
@@ -470,6 +495,73 @@ void _sf_free(void *ptr, const char *file, const char *func, int line)
 	SF_MUTEX_UNLOCK();
 
 	free_fn(p);
+}
+
+
+void* _sf_mmap(
+	void *__addr, size_t __len, 
+	int __prot, int __flags,
+	int __fd, __off_t __offset,
+	const char *file, const char *func, int line)
+{
+	ASSERT_STATE();
+	if (!__len) {
+		sfm_warn("[mmap] invalid size", file, func, line);
+		return MAP_FAILED;
+	}
+
+	struct address *p = (struct address*)malloc(sizeof(struct address));
+	void *m = mmap_fn(__addr, __len, __prot, __flags, __fd, __offset);
+	if (!p || m == MAP_FAILED) {
+		return MAP_FAILED;
+	}
+
+	if (record_alloc(p, m, __len, file, func, line) != 0) {
+		munmap_fn(__addr, __len);
+		return MAP_FAILED;
+	}
+
+	SF_MUTEX_LOCK();
+	++sf.mmap_calls;
+	SF_MUTEX_UNLOCK();
+
+	return m;
+}
+
+
+void* _sf_xmmap(
+	void *__addr, size_t __len, 
+	int __prot, int __flags,
+	int __fd, __off_t __offset,
+	const char *file, const char *func, int line)
+{
+	void *m = _sf_mmap(__addr, __len, __prot, __flags, __fd, __offset, file, func, line);
+	if (m == MAP_FAILED) 
+		sfm_fail_die("mmap failed. dying now", file, func, line);
+	return m;
+}
+
+
+void _sf_munmap(void *__addr, size_t __len, const char *file, const char *func, int line)
+{
+	ASSERT_STATE();
+	SF_MUTEX_LOCK();
+
+	struct address *p = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)__addr);
+	if (!p) {
+		sfm_fail_die("[munmap] Trying to free invalid pointer", file, func, line);
+		goto unlock_ret;
+	}
+
+	// NOTE: For mmap allocations, memory and 'struct address' object are not 
+	// allocated as one, as it can cause big memory waste.
+	munmap_fn((void*)p->address, p->bytes);
+	free_fn(p);
+	sf.current_memory -= __len;
+	++sf.munmap_calls;
+
+unlock_ret:
+	SF_MUTEX_UNLOCK();
 }
 
 
