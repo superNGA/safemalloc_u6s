@@ -440,13 +440,15 @@ void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, in
 
 	// Attempt to remove @p ptr from hashtable. If this fails, the program must die.
 	// It will most likely fail due to user fault (calling with invalid ptr)
-	pold = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)ptr);
-	int first_entry = ptr == NULL;
-	if (!first_entry && pold == NULL) {
-		SF_MUTEX_UNLOCK();
-		sfm_fail_die("[realloc] Failed to remove allocation from hashtable."
-				"Make sure you allocated it using sf_realloc", file, func, line);
-		return NULL;
+	if (pold)
+	{
+		struct address *hashed_ptr = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)ptr);
+		if (ptr && !hashed_ptr) { // if ptr is valid, we should have this adrs indexed in our hashtable.
+			SF_MUTEX_UNLOCK();
+			sfm_fail_die("[realloc] Failed to remove allocation from hashtable."
+					"Make sure you allocated it using sf_realloc", file, func, line);
+			return NULL;
+		}
 	}
 	SF_MUTEX_UNLOCK();
 
