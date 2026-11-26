@@ -193,10 +193,10 @@ static void sfm_warn(const char *msg, const char *file, const char *func, int li
 {
 	printf(LOGCLR_YELLOW);
 	{
-		printf("%s", msg);
-		printf("file : %s", file ? file : nullstr);
-		printf("func : %s", func ? func : nullstr);
-		printf("line : %d", line);
+		LOG("%s", msg);
+		LOG("file : %s", file ? file : nullstr);
+		LOG("func : %s", func ? func : nullstr);
+		LOG("line : %d", line);
 	}
 	printf(LOGCLR_RESET);
 }
@@ -384,12 +384,12 @@ void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, 
 	if (!nmemb || !size)
 		return NULL;
 
-	if (size + 5 >= SIZE_MAX / nmemb) { // +5 cause off-by-one errors paranoia me.
+	if (size > (SIZE_MAX - 64) / nmemb) { // -64 cause off-by-one errors paranoia me.
 		sfm_warn("[calloc] nmemb * size overflowed", file, func, line);
 		return NULL;
 	}
 
-	size_t s = size * nmemb; // TODO : to size_t overflow check
+	size_t s = size * nmemb;
 	if (!s) {
 		sfm_warn("[calloc] trying to zero bytes", file, func, line);
 		return NULL;
@@ -423,46 +423,56 @@ void *_sf_xcalloc(size_t nmemb, size_t size, const char *file, const char *func,
 
 void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, int line)
 {
+	// NOTE: This function has many points of failure. Modify with caution.
 	ASSERT_STATE();
 	if (!size) {
 		sfm_warn("[realloc] trying to zero bytes", file, func, line);
 		return NULL;
 	}
-	
+
+	// STEP 1: Remove the old allocation record from hash-table.
 	SF_MUTEX_LOCK();
-	// First, get over with realloc, so we can handle our fails cleanly.
-	struct address *pold = (struct address*)hashtable_get(&sf.ht, (uintptr_t)ptr); // this will be NULL for first allocation.
-	struct address *p = (struct address*)realloc_fn(pold, size + sizeof(struct address));
-	if (!p) {
-		SF_MUTEX_UNLOCK();
+	struct address *pold = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)ptr);
+	SF_MUTEX_UNLOCK();
+	if (ptr && !pold) {
+		sfm_fail_die("old address not found in hashtable at time of reallocation."
+			"Did you called sf_realloc on realloc pointer?", file, func, line);
 		return NULL;
 	}
 
-	// Attempt to remove @p ptr from hashtable. If this fails, the program must die.
-	// It will most likely fail due to user fault (calling with invalid ptr)
-	if (pold)
-	{
-		struct address *hashed_ptr = (struct address*)hashtable_remove(&sf.ht, (uintptr_t)ptr);
-		if (ptr && !hashed_ptr) { // if ptr is valid, we should have this adrs indexed in our hashtable.
+	// STEP 2: Try to reallocate.
+	struct address *p = (struct address*)realloc_fn(pold, size + sizeof(struct address));
+	if (!p) {
+		// NOTE : realloc failed and we already removed 'ptr' from hashtable.
+		//        Now we must add it back.
+		int recover = 1;
+		if (pold) {
+			SF_MUTEX_LOCK();
+			recover = hashtable_add(&sf.ht, pold) == 0;
 			SF_MUTEX_UNLOCK();
-			sfm_fail_die("[realloc] Failed to remove allocation from hashtable."
-					"Make sure you allocated it using sf_realloc", file, func, line);
-			return NULL;
 		}
+		if (!recover) {
+			sfm_fail_die("Failed to prevent hashtable corruption after realloc fail",
+				file, func, line);
+		}
+		return NULL;
 	}
+
+	// STEP 2.5: Fix current memory usage. 
+	// NOTE: 'pold' is no longer a valid pointer.
+	SF_MUTEX_LOCK();
+	sf.current_memory -= pold ? p->bytes : 0;
 	SF_MUTEX_UNLOCK();
 
-	// add new entry to hash-table
+	// STEP 3: Add the new allocation record to hash-table
 	if (record_alloc(p, p + 1, size, file, func, line) != 0) {
-		free_fn(p);
-		sfm_fail_die("[realloc] failed to record allocation", file, func, line);
+		sfm_fail_die("[realloc] Failed to record allocation", file, func, line);
+		return NULL;
 	}
 
 	SF_MUTEX_LOCK();
 	++sf.realloc_calls;
-	sf.current_memory -= pold ? pold->bytes : 0;
 	SF_MUTEX_UNLOCK();
-
 	return p + 1;
 }
 
