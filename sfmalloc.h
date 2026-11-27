@@ -49,16 +49,6 @@
 */
 
 
-/**
-* Custom allocator, if want
-*/
-#define malloc_fn   malloc
-#define calloc_fn   calloc
-#define realloc_fn  realloc
-#define free_fn     free
-
-#define mmap_fn mmap
-#define munmap_fn munmap
 
 /**
 * Custom exit error code.
@@ -72,43 +62,30 @@
 	#define SFMALLOC_EXIT_FAILURE (EXIT_FAILURE)
 #endif
 
-/*
-* Transparent usage.
+
+
+/**
+* Structure that holds per-allocation infos required
+* in order to retrieve the address and print
+* useful information in case of error.
 *
-* Enables transparent usage of safemalloc in the project.
-* This flag can be enabled either by a define statement
-* or by a 'CFLAGS', with -DSF_TRANSPARENT.
+* Each [m,c,re]alloc call will allocate a new structure.
 */
-#ifdef SF_TRANSPARENT
-	#define malloc  sf_malloc
-	#define calloc  sf_calloc
-	#define realloc sf_realloc
-	#define free    sf_free
-#endif
+struct address
+{
+	/* Relevant info. */
+	uintptr_t address;
+	struct address *next;
 
+	size_t bytes;
 
-	/**
-	 * Structure that holds per-allocation infos required
-	 * in order to retrieve the address and print
-	 * useful information in case of error.
-	 *
-	 * Each [m,c,re]alloc call will allocate a new structure.
-	 */
-	struct address
-	{
-		/* Relevant info. */
-		uintptr_t address;
-		struct address *next;
-
-		size_t bytes;
-
-		/* Additional info. */
+	/* Additional info. */
 #ifndef SFMALLOC_SAVE_SPACE
-		const char *file;
-		const char *func;
-		int line;
+	const char *file;
+	const char *func;
+	int line;
 #endif
-	};
+};
 
 
 /* Behaviour macros. */

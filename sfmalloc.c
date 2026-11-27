@@ -22,14 +22,19 @@
  * SOFTWARE.
  */
 
-/* Undef SF_TRANSPARENT to ourselves. */
-#undef SF_TRANSPARENT
 
 #include "sfmalloc.h"
 #include <assert.h>
 #include <stdarg.h>
 #include <math.h>
 
+#define malloc_fn   malloc
+#define calloc_fn   calloc
+#define realloc_fn  realloc
+#define free_fn     free
+
+#define mmap_fn mmap
+#define munmap_fn munmap
 
 // colorful terminal text
 #define LOGCLR_RESET   "\033[0m"
