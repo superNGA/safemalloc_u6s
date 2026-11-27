@@ -210,7 +210,7 @@ static void sfm_warn(const char *msg, const char *file, const char *func, int li
 void sf_log_leaks()
 {
 	SFMTX_ASSERT_LOCK();
-	LOG(LOGCLR_RED);
+	putchar('\n');
 	struct hashtable *h = sf.ht;
 	if (!h)
 		return;
@@ -580,6 +580,17 @@ void _sf_munmap(void *__addr, size_t __len, const char *file, const char *func, 
 unlock_ret:
 	SF_MUTEX_UNLOCK();
 }
+
+
+size_t sf_memusg()         { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.current_memory;  SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_peak_memusg()    { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.peak_memory;     SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_total_memusg()   { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.total_allocated; SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_ncalls_malloc()  { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.malloc_calls;    SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_ncalls_calloc()  { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.calloc_calls;    SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_ncalls_realloc() { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.realloc_calls;   SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_ncalls_free()    { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.free_calls;      SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_ncalls_mmap()    { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.mmap_calls;      SF_MUTEX_UNLOCK(); return ret; }
+size_t sf_ncalls_munmap()  { ASSERT_STATE(); SF_MUTEX_LOCK(); size_t ret = sf.munmap_calls;    SF_MUTEX_UNLOCK(); return ret; }
 
 
 /*===========================================================================*

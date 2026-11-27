@@ -139,16 +139,16 @@ extern void sf_uninit(void);
 * like: filename, function name and line number.
 */
 #ifndef SFMALLOC_SAVE_SPACE
-	#define sf_malloc(size)        _sf_malloc((size), __FILE__, __func__, __LINE__)
-	#define sf_xmalloc(size)        _sf_xmalloc((size), __FILE__, __func__, __LINE__)
+	#define sf_malloc(size) _sf_malloc((size), __FILE__, __func__, __LINE__)
+	#define sf_xmalloc(size) _sf_xmalloc((size), __FILE__, __func__, __LINE__)
 
 	#define sf_calloc(nmemb, size) _sf_calloc((nmemb), (size), __FILE__, __func__, __LINE__)
 	#define sf_xcalloc(nmemb, size) _sf_xcalloc((nmemb), (size), __FILE__, __func__, __LINE__)
 	
-	#define sf_realloc(ptr, size)  _sf_realloc((ptr), (size), __FILE__, __func__, __LINE__)
-	#define sf_xrealloc(ptr, size)  _sf_xrealloc((ptr), (size), __FILE__, __func__, __LINE__)
+	#define sf_realloc(ptr, size) _sf_realloc((ptr), (size), __FILE__, __func__, __LINE__)
+	#define sf_xrealloc(ptr, size) _sf_xrealloc((ptr), (size), __FILE__, __func__, __LINE__)
 
-	#define sf_free(ptr)           _sf_free((ptr), __FILE__, __func__, __LINE__)
+	#define sf_free(ptr) _sf_free((ptr), __FILE__, __func__, __LINE__)
 
 	#define sf_mmap(addr, len, prot, flags, fd, offset) _sf_mmap(addr, len, \
 			prot, flags, fd, offset, __FILE__, __func__, __LINE__)
@@ -171,22 +171,33 @@ extern void sf_uninit(void);
 	#define sf_xmmap(addr, len, prot, flags, fd, offset) _sf_mmap(addr, len, prot, flags, fd, offset, 0, 0, 0)
 	#define sf_munmap(addr, len) _sf_munmap(addr, len, 0, 0, 0)
 #endif
-extern void *_sf_malloc(size_t size, const char *file, const char *func, int line);
-extern void *_sf_xmalloc(size_t size, const char *file, const char *func, int line);
+void *_sf_malloc(size_t size, const char *file, const char *func, int line);
+void *_sf_xmalloc(size_t size, const char *file, const char *func, int line);
 
-extern void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, int line);
-extern void *_sf_xcalloc(size_t nmemb, size_t size, const char *file, const char *func, int line);
+void *_sf_calloc(size_t nmemb, size_t size, const char *file, const char *func, int line);
+void *_sf_xcalloc(size_t nmemb, size_t size, const char *file, const char *func, int line);
 
-extern void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, int line);
-extern void *_sf_xrealloc(void *ptr, size_t size, const char *file, const char *func, int line);
+void *_sf_realloc(void *ptr, size_t size, const char *file, const char *func, int line);
+void *_sf_xrealloc(void *ptr, size_t size, const char *file, const char *func, int line);
 
-extern void _sf_free(void *ptr, const char *file, const char *func, int line);
+void _sf_free(void *ptr, const char *file, const char *func, int line);
 
-extern void *_sf_mmap(void *__addr, size_t __len, int __prot, int __flags, int __fd, __off_t __offset,
+void *_sf_mmap(void *__addr, size_t __len, int __prot, int __flags, int __fd, __off_t __offset,
 		const char *file, const char *func, int line);
-extern void *_sf_xmmap(void *__addr, size_t __len, int __prot, int __flags, int __fd, __off_t __offset,
+void *_sf_xmmap(void *__addr, size_t __len, int __prot, int __flags, int __fd, __off_t __offset,
 		const char *file, const char *func, int line);
-extern void _sf_munmap(void *__addr, size_t __len, const char *file, const char *func, int line);
+void _sf_munmap(void *__addr, size_t __len, const char *file, const char *func, int line);
+
+// View into the internal variables.
+size_t sf_memusg();         // get total memory allocated right now (via safe malloc)
+size_t sf_peak_memusg();    // get highest memory usage at any point till this point
+size_t sf_total_memusg();   // total memory allocated till this point
+size_t sf_ncalls_malloc();  // number of sf_malloc calls made 
+size_t sf_ncalls_calloc();  // number of sf_calloc calls made
+size_t sf_ncalls_realloc(); // number of sf_realloc calls made
+size_t sf_ncalls_free();    // number of sf_free calls made
+size_t sf_ncalls_mmap();    // number of sf_mmap calls made
+size_t sf_ncalls_munmap();  // number of sf_munmap calls made
 
 
 
